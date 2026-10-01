@@ -1,0 +1,63 @@
+FROM node:26-slim
+
+ARG USERNAME=node
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV DSH_HOME=/home/${USERNAME}/.dsh
+ENV XDG_DATA_HOME=/home/${USERNAME}/.dsh/.data
+ENV XDG_CACHE_HOME=/home/${USERNAME}/.dsh/.cache
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    python3 \
+    ca-certificates \
+    git \
+    openssh-client \
+    socat \
+    tini \
+    zsh \
+    sudo \
+    less \
+    curl
+
+RUN --mount=type=cache,target=/root/.npm,sharing=shared \
+    --mount=type=cache,target=/root/.local/share/pnpm/store,sharing=shared \
+    npm install -g --no-audit --no-fund npm@latest pnpm@latest
+
+RUN mkdir -p /usr/local/dsh
+WORKDIR /usr/local/dsh
+RUN git clone https://github.com/deepseek-ai/deepseek-harness.git .
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
+    pnpm install
+RUN pnpm build
+
+RUN mkdir -p /var/log/dsh /home/${USERNAME}/.ssh
+
+RUN printf 'Host github.com\n  StrictHostKeyChecking accept-new\n' >>/etc/ssh/ssh_config \
+    && echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/$USERNAME \
+    && chmod 0440 /etc/sudoers.d/$USERNAME
+
+RUN cat > /home/${USERNAME}/.ssh/config <<'EOF'
+Host workspaces
+HostName workspaces
+Port 2222
+User app
+IdentityFile ~/.ssh/dsh-workspace
+StrictHostKeyChecking no
+UserKnownHostsFile /dev/null
+EOF
+
+COPY --chown=${USERNAME}:${USERNAME} dsh-entrypoint.sh /usr/local/bin/dsh-entrypoint.sh
+RUN chmod 755 /usr/local/bin/dsh-entrypoint.sh
+
+RUN chown -R ${USERNAME}:${USERNAME} /home/${USERNAME} /var/log/dsh /usr/local/dsh \
+    && chmod 700 /home/${USERNAME}/.ssh \
+    && chmod 600 /home/${USERNAME}/.ssh/config
+
+USER ${USERNAME}
+WORKDIR /home/${USERNAME}
+EXPOSE 3080
+
+ENTRYPOINT ["tini", "--", "/usr/local/bin/dsh-entrypoint.sh"]
